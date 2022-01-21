@@ -1,0 +1,256 @@
+---
+title: "Singapore data"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r cars, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(DT)
+library(RColorBrewer)
+library(mapproj)
+library(sf)
+library(RgoogleMaps)
+library(scales)
+library(rworldmap)
+library(maps)
+library(tidyverse)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(rgeos)
+library(ggspatial)
+library(maptools)
+library(leaflet)
+library(tmap)
+library(here)
+library(rgdal)
+library(scales)
+library(ggmap)
+library(raster)
+library(pander)
+library(tidyverse)
+```
+
+
+```{r}
+data <- read.csv("LOGs_Singapore_UE_Poznan_20210414.csv")
+```
+
+First, the rows with empty values (unit non-response) are thrown out. Fortunatly, the was only one row.
+```{r}
+dane <- data[complete.cases(data),]
+
+ table(dane$country) %>% pander::pander(.) 
+```
+
+
+
+There are many country codes in the dataset, but this analysis is going to be focused of data that comes from Singapur. To do this, its rought cordinates are used to filter the dataset
+```{r}
+dane_sg <- dane %>% filter(between(latitude,1.16,1.46) & between(longitude,103.59, 104.08))
+
+table(dane_sg$country) %>% knitr::kable()
+```
+As it turns out, there are 3 country codes present: Indonesian, Malasian and Singapurian. This could be ilustrated on the map. Large presence of MA country codes in the nothern part of the country is probably the result of having a considerable in size malasian minority.
+
+###
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+sbbox <- make_bbox(lon = c(103.59, 104.08), lat = c(1.16, 1.46), f = .1)
+
+singapore = get_map(location=sbbox, zoom=10, maptype="terrain")
+
+singaporemap = ggmap(singapore)
+
+singaporemap +
+  geom_point(data = dane_sg, mapping = aes(x = longitude, y = latitude,colour=country,alpha=0.1)) + geom_line(data = dane_sg, mapping = aes(group = selectivv_id,x = longitude, y = latitude,alpha=0.1, colour=country) )  + theme(legend.position = "none") + ggtitle("Distribution of country codes of selectivv_ids in Singapore \n (MY at the top, SG at the bottom)")
+```
+
+There is a least a couple of observations for each day with different timestamps for a lot of the selectivv_id's.
+
+
+With 2 or more of these observations a route could be mapped and distace calculated
+Although, this example shows how imprecise this calculations could be.
+
+
+```{r}
+data_sg_d <- dane_sg[format(as.POSIXct(dane_sg$timestamp),"%d") == "06",]
+
+data_sg_d_user <- data_sg_d[data_sg_d$selectivv_id == "98b932b1-1043-4636-ab07-400d9d25c295",]
+dat <- data_sg_d_user
+```
+
+
+For a given selective_id, the day 2021-04-06, the distace between 2 furthest point was about 0.07 degrees longitude (actual distace is even greater), which is roughly 7 km, and the difference in timestamps was under a minute. 
+
+```{r}
+singaporemap +
+  geom_jitter(data = dat, mapping = aes(x = longitude, y = latitude)) + geom_line(data = dat, mapping = aes(x = longitude, y = latitude) )  + theme(legend.position = "none") 
+```
+
+
+For the sake of mapping, obervations with timestamps difference that is under 1 minutes, are united, and mean value is used as a new one.
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+data_sg_D <- dane_sg %>% mutate(time = format(as.POSIXct(timestamp),"%H:%M:%S"),day = format(as.POSIXct(timestamp),"%d"),dw=weekdays(as.Date(timestamp)),ddw = str_c(day," ",dw))
+
+dtt <- data_sg_D[1:1000,] %>% group_by(selectivv_id,day,ddw) %>% summarise(mn = abs(difftime(max(timestamp),min(timestamp),units = "secs")), mnB = ((mn/60)<1)) %>% arrange(desc(mn))
+
+dane_sg_trimmed <- data_sg_D[dtt$mnB,] %>% group_by(selectivv_id,day,ddw) %>% summarise(longitude = mean(longitude), latitude = mean(latitude))
+
+dane_sg_trimmed2 <- rbind(data_sg_D[!dtt$mnB,c("selectivv_id","day","ddw","longitude","latitude")],dane_sg_trimmed)
+
+days <- sort(unique(dane_sg_trimmed2$day))
+
+```
+
+
+The maps are a visual representation of movements in Singapore. 
+
+```{r message=FALSE, warning=FALSE, paged.print=TRUE}
+for(i in days){
+dat <- dane_sg_trimmed2 %>% filter(day == i)
+
+mpp <- singaporemap +
+  geom_point(data = dat, mapping = aes(x = longitude, y = latitude,colour=selectivv_id),alpha=0.2) + geom_line(data = dat, mapping = aes(group = selectivv_id,x = longitude, y = latitude,alpha=0.4, colour=selectivv_id) )  + theme(legend.position = "none") + ggtitle(dat$ddw[1])
+
+plot(mpp)
+}
+
+```
+
+
+
+For some reason Thursday 01, 08 and Wednesday 07 saw very little movement. This could be caused by the lack of data for those days, but Thursday 01 had enough data to notice movement, so there maybe something more to it. When the movement is visible, the biggest consentrations lay in the southern part of the island.
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+distanceCalc <- function(s,d){
+    lonlanL <- list()
+  test <-  data_sg_D[(data_sg_D$selectivv_id == s) & (data_sg_D$day == d),c("longitude","latitude")]
+    
+  if(nrow(test)>0){
+    for(i in 1:nrow(test)){
+    lonlanL[[i]] <-  lapply( 1:nrow(test), function(j) { 
+      
+      pointDistance(as.numeric(test[i,]), as.numeric(test[j,]),lonlat = T)
+      })}
+  
+  #lonlanLL[[d]][[s]] <- max(unlist(lonlanL))
+    return(max(unlist(lonlanL)))
+  }else{
+    #lonlanLL[[d]][[s]] <- 0
+    return(0)
+  }
+}
+```
+
+Given there are longitude and latitudes available, distance could be calculated. Although not precise, with km as a unit, comparing those measures shows which days of the week were the busiest. As was shown on the map, Wednesday and Thursday were low in movement intensity (possible lack of data).
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+t1 <- Sys.time()
+### RUN THIS ONE FIRST ###
+
+ncores <- detectCores() - 1
+selectivv_ids <-  unique(data_sg_D$selectivv_id)
+days <- unique(data_sg_D$day)
+apps <- unique(data_sg_D$appBundleId)
+appnames <- unique(data_sg_D$appName)
+lonlanLL <- list()
+
+for(d in days){
+  
+   lonlanLL[[d]] <- mclapply(selectivv_ids,function(s){
+     distanceCalc(s,d)
+   }
+    ,mc.cores = ncores)  
+  
+ 
+}
+
+Sys.time() - t1
+write_rds(lonlanLL,file = "lonlanLL")
+```
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+lonlanLL <- read_rds("lonlanLL")
+```
+
+
+```{r}
+avgDD <- list()
+
+for(i in 1:length(days)){
+  avgDD[i] <- mean(unlist(lonlanLL[days[i]]))
+  
+}
+
+data.frame(Monday = mean(avgDD[[5]],avgDD[[12]]),
+           Tuesday = mean(avgDD[[6]],avgDD[[13]]),
+           Wednesday = avgDD[[7]],
+           Thursday = mean(avgDD[[1]],avgDD[[8]]),
+           Friday = mean(avgDD[[2]],avgDD[[9]]),
+           Saturday = mean(avgDD[[3]],avgDD[[10]]),
+           Sunday = mean(avgDD[[4]],avgDD[[11]])) %>% knitr::kable()
+
+```
+
+
+Maximum number of apps per selectivv_id was 5, but most of ids had one app in the given dataset from SG
+```{r warning=TRUE}
+dane_sg %>% group_by(selectivv_id) %>% summarise(n = n_distinct(appName)) %>% summary(n) %>% knitr::kable()
+```
+There are number of apps in the dataset
+```{r}
+dane %>% summarise(n = n_distinct(appName))
+```
+
+
+Top 10 most common apps in Singapore includes 2 dublicates that have different appBundleId
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+dane_sg %>% group_by(appBundleId,appName) %>% summarise(n = n_distinct(selectivv_id)) %>% arrange(desc(n)) %>% head(10) %>% knitr::kable()
+```
+
+Top 10 apps with selectivv_id in the most countries includes no name app.
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+dane %>% group_by(appBundleId,appName) %>% summarise(n = n_distinct(country)) %>% arrange(desc(n)) %>% head(10) %>% knitr::kable()
+```
+ In fact there is also empty appBundleId with a no-name apps.
+ 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+dane %>% filter(appName == "") %>% group_by(appBundleId) %>% count() %>% arrange(desc(n)) %>% head(10) %>% knitr::kable()
+```
+
+
+ In total, there are 163 of different appBundleIds for no-name apps. Instead of removing those observations, appBundleId are used for analysis. 
+ 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+dane %>% filter(appName == "") %>% summarise(no_names = n_distinct(appBundleId)) %>% knitr::kable()
+```
+
+
+```{r message=FALSE, warning=FALSE, paged.print=TRUE}
+selectivv_ids <-  unique(data_sg_D$selectivv_id)
+
+dane_dist <- data.frame(day = rep(days,each=length(days)*length(selectivv_ids)),selectivv_id = rep(selectivv_ids,length(days)),maxDistance = unlist(lonlanLL))
+
+dane_app <- data_sg_D %>% group_by(selectivv_id,appBundleId) %>% distinct(appName) 
+
+dane_dist_app <- plyr::join(dane_dist,dane_app,by="selectivv_id",type="left") %>% 
+  arrange(desc(maxDistance))
+
+head(dane_dist_app,10) %>% knitr::kable() 
+```
+
+Some apps could be correlated with greater mobility of selectivv_id or it could be a case of difference in prevalence. Mean distances by appName are shown below. 
+```{r message=FALSE, warning=FALSE}
+dane_dist_app_G <- dane_dist_app %>% group_by(appBundleId,appName) %>% summarise(md = mean(maxDistance),n_id = n_distinct(selectivv_id)) %>% arrange(desc(md)) 
+
+dane_dist_app_G %>% head(10) %>% knitr::kable()
+```
+
+
